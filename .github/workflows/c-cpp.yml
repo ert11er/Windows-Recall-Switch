@@ -27,9 +27,41 @@ jobs:
         # override PlatformToolset to one available on the runner (v143 = VS2022). Adjust if needed.
         run: msbuild "Windows-Recall-Switch.sln" /p:Configuration=Release /p:PlatformToolset=v143 /m
 
-      - name: Collect artifacts
+      - id: collect
+        name: Locate and collect build outputs
+        shell: pwsh
+        run: |
+          Write-Host "Searching for files in Release folders..."
+          $artifacts = Join-Path $PWD 'artifacts'
+          New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
+
+          # Find common binary types inside any Release folder
+          $items = Get-ChildItem -Path $PWD -Recurse -File -Include '*.exe','*.dll','*.msi','*.nupkg' -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match '\\Release\\' }
+
+          if (-not $items -or $items.Count -eq 0) {
+            Write-Host "No Release binaries found."
+            Write-Host "Listing top-level directories (for debugging):"
+            Get-ChildItem -Path $PWD -Directory | ForEach-Object { Write-Host $_.FullName }
+            # Set output flag so upload step can skip
+            "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            exit 0
+          }
+
+          foreach ($it in $items) {
+            $relative = $it.FullName.Substring($PWD.Path.Length).TrimStart('\')
+            $dest = Join-Path $artifacts $relative
+            New-Item -ItemType Directory -Path (Split-Path $dest) -Force | Out-Null
+            Copy-Item $it.FullName $dest -Force
+            Write-Host "Collected $($it.FullName) -> $dest"
+          }
+
+          Get-ChildItem -Path $artifacts -Recurse | ForEach-Object { Write-Host $_.FullName }
+          "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload artifacts (only if files were found)
+        if: steps.collect.outputs.found == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Windows-Recall-Switch-release
-          path: |
-            **\bin\Release\**
+          path: artifacts
