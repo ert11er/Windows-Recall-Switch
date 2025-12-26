@@ -20,6 +20,9 @@ jobs:
         # replace "Windows-Recall-Switch.sln" with your solution file
         run: nuget restore "Windows-Recall-Switch.sln"
 
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1
+
       - name: Build solution
         # replace "Windows-Recall-Switch.sln" with your solution file
         run: msbuild "Windows-Recall-Switch.sln" /p:Configuration=Release /m
