@@ -24,8 +24,8 @@ jobs:
         uses: microsoft/setup-msbuild@v1
 
       - name: Build solution
-        # replace "Windows-Recall-Switch.sln" with your solution file
-        run: msbuild "Windows-Recall-Switch.sln" /p:Configuration=Release /m
+        # override PlatformToolset to one available on the runner (v143 = VS2022). Adjust if needed.
+        run: msbuild "Windows-Recall-Switch.sln" /p:Configuration=Release /p:PlatformToolset=v143 /m
 
       - name: Collect artifacts
         uses: actions/upload-artifact@v4
