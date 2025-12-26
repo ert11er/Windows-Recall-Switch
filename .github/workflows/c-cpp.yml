@@ -1,4 +1,4 @@
-# Windows build using MSBuild
+# Windows build using MSBuild — build platforms sequentially and collect artifacts
 on:
   push:
     branches: [ main ]
@@ -17,50 +17,64 @@ jobs:
         run: choco install -y nuget.commandline
 
       - name: Restore NuGet packages (if any)
-        # replace "Windows-Recall-Switch.sln" with your solution file
         run: nuget restore "Windows-Recall-Switch.sln"
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v1
 
-      - name: Build solution
-        # override PlatformToolset to one available on the runner (v143 = VS2022). Adjust if needed.
-        run: msbuild "Windows-Recall-Switch.sln" /p:Configuration=Release /p:PlatformToolset=v143 /m
-
-      - id: collect
-        name: Locate and collect build outputs
+      - id: build-and-collect
+        name: Build platforms sequentially and collect Release outputs
         shell: pwsh
         run: |
-          Write-Host "Searching for files in Release folders..."
-          $artifacts = Join-Path $PWD 'artifacts'
-          New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
+          # Platforms to build (Win32 is Visual Studio's name for x86)
+          $platforms = @('Win32','x64','ARM64')
+          $solution = "Windows-Recall-Switch.sln"
+          $artifactsRoot = Join-Path $PWD 'artifacts'
+          New-Item -ItemType Directory -Path $artifactsRoot -Force | Out-Null
 
-          # Find common binary types inside any Release folder
-          $items = Get-ChildItem -Path $PWD -Recurse -File -Include '*.exe','*.dll','*.msi','*.nupkg' -ErrorAction SilentlyContinue |
-                   Where-Object { $_.FullName -match '\\Release\\' }
+          foreach ($p in $platforms) {
+            Write-Host "=== Building platform: $p ==="
 
-          if (-not $items -or $items.Count -eq 0) {
-            Write-Host "No Release binaries found."
-            Write-Host "Listing top-level directories (for debugging):"
-            Get-ChildItem -Path $PWD -Directory | ForEach-Object { Write-Host $_.FullName }
-            # Set output flag so upload step can skip
-            "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-            exit 0
+            # Build the solution for this platform.
+            # Adjust /p:PlatformToolset if you want a different toolset or remove it to use project's default.
+            msbuild $solution /p:Configuration=Release /p:Platform=$p /p:PlatformToolset=v143 /m
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "MSBuild failed for platform $p with exit code $LASTEXITCODE"
+              exit $LASTEXITCODE
+            }
+
+            # Collect files produced in Release folders for this platform.
+            $destRoot = Join-Path $artifactsRoot $p
+            New-Item -ItemType Directory -Path $destRoot -Force | Out-Null
+
+            # Try to find files under a path that contains both the platform and Release (common VC++ layout).
+            $items = Get-ChildItem -Path $PWD -Recurse -File -Include '*.exe','*.dll','*.msi','*.nupkg' -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -match '\\Release\\' -and $_.FullName -match "\\$p\\\\" }
+
+            # Fallback — include any Release files if none found for platform-specific path
+            if (-not $items -or $items.Count -eq 0) {
+              Write-Host "No platform-specific Release files found for $p; falling back to any Release files."
+              $items = Get-ChildItem -Path $PWD -Recurse -File -Include '*.exe','*.dll','*.msi','*.nupkg' -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -match '\\Release\\' }
+            }
+
+            if ($items -and $items.Count -gt 0) {
+              foreach ($it in $items) {
+                $rel = $it.FullName.Substring($PWD.Path.Length).TrimStart('\')
+                $dest = Join-Path $destRoot $rel
+                New-Item -ItemType Directory -Path (Split-Path $dest) -Force | Out-Null
+                Copy-Item $it.FullName $dest -Force
+                Write-Host "Collected: $($it.FullName) -> $dest"
+              }
+            } else {
+              Write-Host "No Release outputs found for platform $p"
+            }
           }
 
-          foreach ($it in $items) {
-            $relative = $it.FullName.Substring($PWD.Path.Length).TrimStart('\')
-            $dest = Join-Path $artifacts $relative
-            New-Item -ItemType Directory -Path (Split-Path $dest) -Force | Out-Null
-            Copy-Item $it.FullName $dest -Force
-            Write-Host "Collected $($it.FullName) -> $dest"
-          }
+          Write-Host "=== Done building and collecting artifacts ==="
+          Get-ChildItem -Path $artifactsRoot -Recurse | ForEach-Object { Write-Host $_.FullName }
 
-          Get-ChildItem -Path $artifacts -Recurse | ForEach-Object { Write-Host $_.FullName }
-          "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Upload artifacts (only if files were found)
-        if: steps.collect.outputs.found == 'true'
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Windows-Recall-Switch-release
